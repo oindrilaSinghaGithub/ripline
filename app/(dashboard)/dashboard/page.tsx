@@ -1,4 +1,3 @@
-import type { Task } from "@prisma/client";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -34,19 +33,24 @@ export const metadata: Metadata = {
 };
 
 function formatDue(date: Date): string {
-  return formatInIST(date, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return formatInIST(date, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 const PRIORITY_STYLES = {
   LOW: "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400",
-  MEDIUM: "border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400",
+  MEDIUM:
+    "border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400",
   HIGH: "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400",
 } as const;
 
 export default async function DashboardPage() {
   const session = await auth();
 
-  // ✅ FIX: prevent crash loop
   if (!session?.user?.id) {
     redirect("/login");
   }
@@ -60,16 +64,21 @@ export default async function DashboardPage() {
       where: {
         userId,
         status: "PENDING",
-        // For recurring tasks, only show if there's a next occurrence
         OR: [
           { recurrenceRule: null },
-          { recurrenceRule: { not: null }, nextOccurrence: { not: null } } as never,
+          {
+            recurrenceRule: { not: null },
+            nextOccurrence: { not: null },
+          } as never,
         ],
       },
       orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
       take: 5,
     }),
-    db.task.findMany({ where: { userId }, orderBy: { dueDate: "asc" } }),
+    db.task.findMany({
+      where: { userId },
+      orderBy: { dueDate: "asc" },
+    }),
   ]);
 
   const insights = computeInsights(allTasks);
@@ -107,7 +116,6 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">
@@ -120,10 +128,8 @@ export default async function DashboardPage() {
         <Badge variant="secondary">Beta</Badge>
       </div>
 
-      {/* AI Insights */}
       <InsightsPanel insights={insights} />
 
-      {/* Stats */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {statCards.map((stat) => (
           <Card key={stat.title}>
@@ -131,7 +137,9 @@ export default async function DashboardPage() {
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {stat.title}
               </CardTitle>
-              <stat.icon className={cn("h-4 w-4 text-muted-foreground", stat.className)} />
+              <stat.icon
+                className={cn("h-4 w-4 text-muted-foreground", stat.className)}
+              />
             </CardHeader>
             <CardContent>
               <p className={cn("text-2xl font-bold", stat.className)}>
@@ -145,7 +153,6 @@ export default async function DashboardPage() {
         ))}
       </div>
 
-      {/* Ask Ripline */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
@@ -153,7 +160,8 @@ export default async function DashboardPage() {
             <CardTitle className="text-base">Ask Ripline</CardTitle>
           </div>
           <CardDescription>
-            Schedule tasks with natural language. Never saved without your review.
+            Schedule tasks with natural language. Never saved without your
+            review.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -161,7 +169,6 @@ export default async function DashboardPage() {
         </CardContent>
       </Card>
 
-      {/* Recent tasks */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold">Upcoming tasks</h2>
@@ -188,8 +195,8 @@ export default async function DashboardPage() {
           </Card>
         ) : (
           <div className="space-y-2">
-          {recentTasks.map((task: Task) => {
-                const isOverdue =
+            {recentTasks.map((task) => {
+              const isOverdue =
                 task.dueDate != null && new Date(task.dueDate) < new Date();
 
               return (
@@ -199,6 +206,7 @@ export default async function DashboardPage() {
                       <p className="truncate text-sm font-medium">
                         {task.title}
                       </p>
+
                       {task.dueDate && (
                         <p
                           className={cn(
@@ -239,10 +247,3 @@ export default async function DashboardPage() {
     </div>
   );
 }
-// export default async function DashboardPage() {
-//   return (
-//     <div className="p-8">
-//       <h1 className="text-2xl font-bold">Dashboard works 🎉</h1>
-//     </div>
-//   );
-// }

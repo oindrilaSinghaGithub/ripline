@@ -3,11 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
-  },
+  "dev": "next dev --webpack",
+  "build": "prisma generate && next build --webpack",
+  "postinstall": "prisma generate",
+  "start": "next start",
+  "lint": "eslint"
+},
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",
     "@aws-sdk/client-textract": "^3.1075.0",
