@@ -1,3 +1,4 @@
+import type { Task } from "@prisma/client";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -187,8 +188,8 @@ export default async function DashboardPage() {
           </Card>
         ) : (
           <div className="space-y-2">
-            {recentTasks.map((task) => {
-              const isOverdue =
+          {recentTasks.map((task: Task) => {
+                const isOverdue =
                 task.dueDate != null && new Date(task.dueDate) < new Date();
 
               return (
