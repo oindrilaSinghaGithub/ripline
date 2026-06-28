@@ -1,0 +1,180 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id               String            @id @default(cuid())
+  name             String?
+  email            String            @unique
+  emailVerified    DateTime?
+  image            String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  accounts         Account[]
+  sessions         Session[]
+  sources          Source[]
+  tasks            Task[]
+  workspaceMembers WorkspaceMember[]
+  ownedWorkspaces  Workspace[]       @relation("WorkspaceOwner")
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Workspace {
+  id          String            @id @default(cuid())
+  name        String
+  slug        String            @unique
+  description String?
+  logoUrl     String?
+  plan        Plan              @default(FREE)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  ownerId     String
+  members     WorkspaceMember[]
+  owner       User              @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  joinedAt    DateTime      @default(now())
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+}
+
+model Source {
+  id              String     @id @default(cuid())
+  userId          String
+  sourceType      SourceType
+  originalContent String
+  uploadedAt      DateTime   @default(now())
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks           Task[]
+
+  @@index([userId])
+  @@map("sources")
+}
+
+model Task {
+  id                      String     @id @default(cuid())
+  userId                  String
+  sourceId                String?
+  title                   String
+  description             String?
+  dueDate                 DateTime?
+  priority                Priority   @default(MEDIUM)
+  category                Category   @default(OTHER)
+  status                  TaskStatus @default(PENDING)
+  recurrenceRule          String?
+  nextOccurrence          DateTime?
+  lastCompletedOccurrence DateTime?
+  completedOccurrences    DateTime[]
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
+  reminders               Reminder[]
+  source                  Source?    @relation(fields: [sourceId], references: [id])
+  user                    User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([userId, dueDate])
+  @@map("tasks")
+}
+
+model Reminder {
+  id       String   @id @default(cuid())
+  taskId   String
+  remindAt DateTime
+  sent     Boolean  @default(false)
+  task     Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([remindAt, sent])
+  @@map("reminders")
+}
+
+enum Plan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum SourceType {
+  TEXT
+  IMAGE
+  PDF
+  EXTENSION
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum Category {
+  ACADEMIC
+  WORK
+  PERSONAL
+  OTHER
+}
+
+enum TaskStatus {
+  PENDING
+  COMPLETED
+}
