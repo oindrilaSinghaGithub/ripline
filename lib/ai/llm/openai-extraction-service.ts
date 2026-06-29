@@ -23,6 +23,7 @@
  */
 
 import { validateLLMOutput } from "../output-validator";
+import { extractAllDates, refineSuggestions } from "../suggestion-quality";
 import type { AIExtractionService, ExtractionResult, SourceMimeType } from "../types";
 
 // ─── JSON Schema for TaskSuggestion[] ────────────────────────────────────────
@@ -46,80 +47,98 @@ const TASK_SUGGESTION_SCHEMA = {
             title: {
               type: "string",
               description:
-                "Short, action-oriented task title. Start with a verb. Max 200 characters.",
+                "Short, complete, human-readable task title (3–8 words preferred). " +
+                "Describes the underlying action or event — never a metadata label alone. " +
+                "\n\nMETADATA LABEL RULE: words like 'Deadline', 'Due Date', 'Submission Ends', " +
+                "'Submission Window Ends', 'Submission Closes', 'Exam Date', 'Meeting Time', " +
+                "'Due', 'Date', 'Time', 'Scheduled', 'Opens', 'Closes', 'Starts', 'Ends' " +
+                "are metadata — they describe WHEN, not WHAT. " +
+                "The date/time they introduce goes in dueDate. The title must describe the event. " +
+                "\n\nGOOD examples: 'Meeting with Rahul', 'Measure Theory Exam', " +
+                "'Submit PRD Document', 'Hackathon Begins', 'Pay Electricity Bill', " +
+                "'Submission Deadline', 'Doctor Appointment', 'Team Meeting'. " +
+                "\n\nBAD examples (never output): " +
+                "'Deadline: June 15' (metadata label + date), " +
+                "'Submission Ends: June 15' (metadata label + date), " +
+                "'13 June' (date alone), '03:00 PM' (time alone), " +
+                "'Room 204' (location alone), 'MA51002' (subject code alone), " +
+                "'Meeting with R' (truncated word), 'the technical s' (truncated mid-word). " +
+                "\n\nTRUNCATION RULE: NEVER cut a title in the middle of a word. " +
+                "If a concise title cannot be found, return the COMPLETE first sentence. " +
+                "Only shorten at natural word boundaries. Max 200 chars.",
             },
             description: {
               type: ["string", "null"],
               description:
-                "Additional context, details, or notes for the task. Null if none.",
+                "Additional context: location, room number, subject code, invigilator, notes. " +
+                "Null if no extra detail is available.",
             },
             dueDate: {
               type: ["string", "null"],
               description:
-                "ISO 8601 datetime (e.g. '2025-07-15T23:59:00.000Z'). " +
-                "Extract from any date/time expression in the text. " +
-                "Use the current year if no year is specified. " +
-                "For vague terms: 'today'=today 23:59, 'tomorrow'=tomorrow 23:59, " +
-                "'this week'=nearest Sunday 23:59, 'next week'=following Sunday 23:59, " +
-                "'this month'=last day of current month 23:59. " +
-                "Null only if absolutely no deadline is expressed or implied.",
+                "ISO 8601 UTC datetime (e.g. '2026-06-30T15:00:00.000Z'). " +
+                "Associate THIS specific date/time with THIS task — never create a separate task for a date alone. " +
+                "Recognised formats: 2026-06-30, 30 June, 30 Jun, 30th June, June 30, " +
+                "30/06/2026, 30-06-2026, Friday, Tomorrow, Today, Next Monday, " +
+                "This Weekend, This Evening, July 15, 15th July, 'in 3 days', 'by end of week'. " +
+                "Use the current year when no year is specified. " +
+                "'Today'=today 23:59, 'Tomorrow'=tomorrow 23:59, 'This Evening'=today 20:00, " +
+                "'This Weekend'=nearest Saturday 10:00. " +
+                "For date ranges (start and end): create TWO tasks with their respective dates. " +
+                "Null ONLY when absolutely no date is expressed or implied.",
             },
             priority: {
               type: "string",
               enum: ["LOW", "MEDIUM", "HIGH"],
               description:
-                "Task priority. HIGH if text contains: urgent, ASAP, critical, deadline, " +
-                "must, immediately, overdue, final. MEDIUM if: important, soon, should, need. " +
-                "LOW for everything else.",
+                "HIGH: urgent, ASAP, critical, must, deadline, exam, final, overdue, immediately. " +
+                "MEDIUM: important, soon, should, need to, submit, meeting, appointment, interview. " +
+                "LOW: when possible, eventually, optional, FYI.",
             },
             category: {
               type: "string",
               enum: ["ACADEMIC", "WORK", "PERSONAL", "OTHER"],
               description:
-                "ACADEMIC: assignments, exams, lectures, studying, courses, thesis, grades. " +
-                "WORK: meetings, reports, clients, projects, deployments, invoices, sprints. " +
-                "PERSONAL: health, family, finances, errands, shopping, fitness, social. " +
-                "OTHER: anything that doesn't fit the above.",
+                "ACADEMIC: exams, assignments, lectures, study, course, thesis, lab, quiz, grade, submit (academic). " +
+                "WORK: meetings, client, report, sprint, deploy, review, standup, project, invoice, proposal. " +
+                "PERSONAL: health, family, finance, bills, errands, shopping, fitness, social, birthday, travel. " +
+                "OTHER: anything that doesn't clearly fit the above.",
             },
             recurrenceRule: {
               type: ["string", "null"],
               description:
-                "iCal RRULE string if the task repeats. Examples: " +
-                "'FREQ=DAILY' (every day), " +
-                "'FREQ=WEEKLY;BYDAY=MO,WE,FR' (every Mon/Wed/Fri), " +
-                "'FREQ=MONTHLY;BYMONTHDAY=1' (1st of every month), " +
-                "'FREQ=WEEKLY;BYDAY=FR' (every Friday). " +
-                "Null if the task is one-time.",
+                "iCal RRULE if the task repeats. Must start with FREQ=. " +
+                "Examples: 'FREQ=DAILY', 'FREQ=WEEKLY;BYDAY=MO,WE,FR', " +
+                "'FREQ=MONTHLY;BYMONTHDAY=1', 'FREQ=WEEKLY;BYDAY=FR'. " +
+                "Null for one-time tasks.",
             },
             reminderOffsets: {
               type: "array",
               description:
-                "ISO 8601 duration strings representing how long BEFORE the due date " +
-                "to send a reminder. Negative durations. Examples: " +
-                "'-PT30M' (30 min before), '-PT1H' (1 hour before), " +
-                "'-PT2H' (2 hours before), '-P1D' (1 day before), '-P3D' (3 days before). " +
-                "Infer from text: 'remind me 1 hour before' → ['-PT1H']. " +
-                "For HIGH priority tasks with a dueDate always include at minimum ['-PT1H','-P1D']. " +
-                "For MEDIUM priority tasks with dueDate include ['-PT1H']. " +
-                "Empty array [] if no reminders are appropriate.",
-              items: {
-                type: "string",
-              },
+                "Negative ISO 8601 durations: how long BEFORE dueDate to remind. " +
+                "HIGH + dueDate → ['-P1D', '-PT1H']. " +
+                "MEDIUM + dueDate → ['-PT1H']. " +
+                "LOW + dueDate → ['-PT30M']. " +
+                "If text says 'remind me X before', use that value. " +
+                "Empty array [] if no dueDate or reminders not appropriate.",
+              items: { type: "string" },
             },
             confidenceScore: {
               type: "number",
               description:
-                "Float 0.0–0.99 representing extraction confidence. " +
-                "0.9–0.99: task is explicit with clear deadline. " +
-                "0.7–0.89: task is clear but deadline inferred or vague. " +
-                "0.5–0.69: task is implied, not directly stated. " +
-                "0.1–0.49: very uncertain extraction.",
+                "Float 0.0–0.99. Start at 0.55. " +
+                "Boost +0.20 for: deadline / due / submit / submission / final keyword. " +
+                "Boost +0.18 for: exam / test / quiz / viva. " +
+                "Boost +0.15 for: meeting / appointment / interview / presentation / payment / invoice. " +
+                "Boost +0.12 for: starts / begins / opens / ends / closes / hackathon. " +
+                "Boost +0.08 if dueDate is set. " +
+                "Cap at 0.99. Lower toward 0.45 only when title had to be inferred from fragments " +
+                "with no surrounding context. Never output 0 or exactly 1.",
             },
             extractedSourceSnippet: {
               type: "string",
               description:
-                "The verbatim phrase or sentence from the source text that " +
-                "produced this task suggestion. Max 300 characters.",
+                "The verbatim phrase or sentence from the source text that produced this task. Max 300 chars.",
             },
           },
           required: [
@@ -146,52 +165,287 @@ const TASK_SUGGESTION_SCHEMA = {
 
 const SYSTEM_PROMPT = `You are an expert task extraction and scheduling assistant.
 
-Your job is to read a piece of text and extract every actionable task it contains.
+════════════════════════════════════════════════════════════════
+CRITICAL PROCESS — follow these steps IN ORDER, every time
+════════════════════════════════════════════════════════════════
 
-## Extraction rules
+STEP 1 — Read the ENTIRE document first
+  Do not produce any output until you have read from the first line to the last.
+  Understand the overall context: exam schedule, hackathon notice, invoice,
+  agenda, assignment list, timetable, or mixed content.
 
-### What counts as a task
-- Any action item, to-do, commitment, obligation, or deadline mentioned
-- Inferred tasks from context (e.g. "the report is due Friday" → task: "Submit report")
-- Recurring commitments ("I study DSA every Friday" → task with recurrence)
+STEP 2 — Identify every logical event
+  An event is anything that happens at a date/time or requires an action.
+  Types: meeting, exam, interview, deadline, submission, payment, appointment,
+  workshop, hackathon, assignment, reminder, invoice due, bill, renewal,
+  birthday, conference, registration, opening, closing, release.
+  Mark EVERY event in the document before writing any JSON.
 
-### Title
-- Start with an action verb (Submit, Finish, Review, Call, Pay, Study, Book, etc.)
-- Be specific and concise — max 200 characters
-- Do NOT include date/time in the title (put it in dueDate)
+STEP 3 — Associate fields to the SAME event
+  For each event, identify:
+    • title  (event/action name — the most descriptive label in the document)
+    • action (what to do, if any)
+    • date   (when — becomes dueDate)
+    • time   (part of dueDate)
+    • location / room (goes in description, NOT in title)
+    • people (goes in title or description)
+    • subject codes (goes in description, NOT as the title)
+  A date or time is NEVER its own task — always attach it to the event.
 
-### Deadline extraction (critical)
-Extract a dueDate whenever the text contains ANY of:
-- Explicit dates: "July 15", "15th", "next Monday", "this Friday", "tomorrow"
-- Relative terms: "in 3 days", "by end of week", "before the weekend"
-- Implicit deadlines: "the report is due", "exam is on", "meeting at 3pm"
-- Time expressions: "at 10 AM", "by noon", "tonight", "this evening"
-Always resolve relative dates against the CURRENT DATE provided in the user message.
-When in doubt, assign a dueDate rather than leaving it null.
+STEP 4 — One task per event
+  Create exactly one task object per logical event.
+  When one paragraph describes multiple events (e.g. start date + end date +
+  submission window), create a SEPARATE task for each.
+  Example:
+    "Hackathon starts June 13, ends June 14. Submission opens June 15 8 AM,
+     closes June 15 11:59 PM."
+  → 4 tasks: Hackathon Begins (Jun 13) | Hackathon Ends (Jun 14) |
+             Submission Opens (Jun 15 08:00) | Submission Deadline (Jun 15 23:59)
 
-### Priority
-Read urgency signals carefully:
-- HIGH: urgent, ASAP, critical, must, deadline, overdue, final, immediately, last chance
-- MEDIUM: important, should, need to, soon, don't forget, please
-- LOW: when possible, eventually, consider, might, could
+════════════════════════════════════════════════════════════════
+TITLE SELECTION PRIORITY — follow this algorithm every time
+════════════════════════════════════════════════════════════════
 
-### Recurrence
-Look for: every [day/week/month/weekday/weekend/Monday/etc.], daily, weekly, monthly, each [day].
-Convert to a valid iCal RRULE string.
+PRIORITY 1 — First meaningful non-empty line
+  Use the first line that describes an action, event, subject, or person.
+  Skip any line that contains ONLY metadata. These words are NEVER titles:
+    Deadline   Due   Due Date   Date   Time   Scheduled
+    Submission Opens   Submission Ends   Submission Closes
+    Venue   Location   Room   Place   Hall   Lab
+    Opens   Closes   Starts   Ends   Begins   Commences   Concludes
+  Skip any line that is ONLY a date or time — dates go in dueDate.
 
-### Reminders
-- Always add reminders for tasks with a dueDate
-- HIGH priority: remind 1 day before AND 1 hour before
-- MEDIUM priority: remind 1 hour before
-- LOW priority: remind 30 minutes before
-- Also extract explicit reminder requests: "remind me 2 hours before" → "-PT2H"
+PRIORITY 2 — Heading word + next descriptive line
+  If the first meaningful line is a single heading-category word such as:
+    Assignment  Project  Report  Presentation  Exam  Invoice  Receipt
+    Meeting  Workshop  Conference  Hackathon  Interview  Resume
+    Application  Registration  Notice  Circular
+  Then COMBINE it with the next descriptive line to form the title.
+  Examples:
+    "Assignment\nDatabase Systems\nDeadline: 17 July"
+    → title = "Database Systems Assignment"  (combine heading + subject, dueDate = 17 July)
 
-### What NOT to do
-- Do not invent tasks that have no basis in the text
-- Do not include prose, explanations, or commentary in any field
-- Do not return anything except the structured JSON
+    "Project\nSmart Parking System\nDeadline: 30 June"
+    → title = "Smart Parking System Project"
 
-If the text contains no actionable tasks, return an empty tasks array.`;
+    "Meeting\nMarketing Team\nDate: Friday 3 PM"
+    → title = "Marketing Team Meeting"
+
+    "Hackathon Submission\nSubmission Ends: 15 June 2025"
+    → title = "Hackathon Submission"  (already meaningful — no combination needed)
+    → dueDate = 15 June 2025
+
+  The combination format is: [Subject/Name] [HeadingWord]
+  e.g.  "Assignment" + "Machine Learning"  →  "Machine Learning Assignment"
+  e.g.  "Exam"       + "Measure Theory"    →  "Measure Theory Exam"
+
+PRIORITY 3 — Generate a concise title
+  If no heading exists, generate a short human-readable title (3–8 words):
+    "Pay Electricity Bill"   "Complete AI Assignment"   "Hackathon Begins"
+    "Submission Deadline"    "Doctor Appointment"        "Prepare Final Report"
+
+PRIORITY 4 — Generic fallback
+  If the document contains only dates/metadata with no meaningful text, use:
+    "Upcoming Deadline"   "Upcoming Event"   "Reminder"
+  NEVER use a date as the title.
+
+  EXPECTED RESULTS:
+    Input:  "Assignment\nDatabase Systems\nDeadline: 17 July 2026"
+    Output: title="Database Systems Assignment", dueDate=2026-07-17
+
+    Input:  "Hackathon Submission\nSubmission Ends: 15 June 2025"
+    Output: title="Hackathon Submission", dueDate=2025-06-15
+
+    Input:  "17 July 2026\nDeadline: 17 July 2026"
+    Output: title="Upcoming Deadline", dueDate=2026-07-17
+    NOT:    title="17 July 2026"
+
+════════════════════════════════════════════════════════════════
+TITLE RULES (strict — enforced by a post-processing filter)
+════════════════════════════════════════════════════════════════
+
+GOOD titles (3–8 words, summarise the event):
+  "Meeting with Rahul"
+  "Measure Theory Exam"
+  "Submit PRD Document"
+  "Pay Electricity Bill"
+  "Hackathon Begins"
+  "Hackathon Ends"
+  "Submission Opens"
+  "Submission Deadline"
+  "Operating Systems Exam"
+  "Complete Machine Learning Assignment"
+  "Doctor Appointment"
+  "Team Meeting"
+  "Invoice Payment"
+  "Prepare Presentation"
+
+BAD titles — NEVER output these:
+  "13 June"                        ← date alone
+  "03:00 PM"                        ← time alone
+  "03:00 PM-05:00 PM"               ← time range alone
+  "2026-06-30"                      ← ISO date alone
+  "Room 204"                        ← location alone
+  "CS501"                           ← subject code alone
+  "MA51002"                         ← subject code alone
+  "Deadline"                        ← metadata label alone
+  "Due Date"                        ← metadata label alone
+  "Submission Ends: June 15, 2025"  ← metadata label + date (should be title + dueDate)
+  "Deadline: June 15"               ← metadata label + date (should be title + dueDate)
+  "Exam Date: 30 June"              ← metadata label + date
+  "Rahul tomorrow"                  ← fragment
+  "Meeting with R"                  ← truncated word
+  "the technical s"                 ← truncated mid-word
+  "Submissi"                        ← truncated mid-word
+
+METADATA LABEL RULE (critical):
+  Words like "Deadline", "Due Date", "Submission Ends", "Submission Window Ends",
+  "Submission Closes", "Exam Date", "Meeting Time", "Due", "Date", "Time",
+  "Opens", "Closes", "Starts", "Ends", "Begins", "Commences", "Scheduled"
+  describe WHEN something happens, not WHAT the task is.
+  When you see "Label: Date" or "Label: Date Time", extract:
+    → dueDate = the date/time value
+    → title   = the underlying event inferred from context
+  Do NOT put the label word in the title.
+
+  Examples:
+    Input:  "Submit PRD document. Deadline: June 15, 2025 11:59 PM"
+    Output: title="Submit PRD Document", dueDate="2025-06-15T18:29:00.000Z"
+
+    Input:  "Submission Window Ends: June 15, 2025"
+    Output: title="Submission Deadline", dueDate="2025-06-15T23:59:00.000Z"
+
+    Input:  "Exam Date: 30 June | Subject: Measure Theory"
+    Output: title="Measure Theory Exam", dueDate=June 30
+
+HEADING PREFERENCE RULE:
+  When the document has section headings or subject names near a date/time,
+  prefer the heading/subject name as the title — not the date label.
+  Examples:
+    "Assignment\nComplete ML Project\nDeadline: 15 July"
+    → title="Complete ML Project", dueDate=July 15
+
+    "MA51002 Measure Theory and Integration | 2026-06-30 | 03:00 PM"
+    → title="Measure Theory and Integration Exam", dueDate=2026-06-30T09:30Z
+
+TRUNCATION RULE (strict):
+  NEVER cut a title in the middle of a word.
+  If a concise title cannot be formed, return the COMPLETE first sentence.
+  Only shorten at natural word boundaries.
+  Bad:  "Common problem: business users often have valuable data but lack the technical s"
+  Good: "Business Users Lack Technical Skills"
+   or:  "Common Problem: Business Users Lack Technical Skills"
+
+Title generation rules:
+  • Prefer exam/event names, document headings, or meeting subjects
+  • Start action items with a verb: Submit, Pay, Attend, Complete, Review, Call, Register
+  • Do NOT include date/time in the title — use dueDate
+  • Never use a subject code as the title — use the full subject name
+  • Never use a single word unless it is an unambiguous complete event name
+
+════════════════════════════════════════════════════════════════
+DATE RECOGNITION
+════════════════════════════════════════════════════════════════
+Recognise and resolve ALL of these to a UTC ISO 8601 dueDate:
+  2026-06-30        → "2026-06-30T23:59:00.000Z" (or extract time if given)
+  30 June           → June 30 of current/next year
+  30 Jun            → same
+  30th June         → same
+  June 30           → same
+  Jun 30th          → same
+  30/06/2026        → June 30 2026
+  30-06-2026        → June 30 2026
+  Friday            → nearest upcoming Friday
+  Tomorrow          → tomorrow 23:59
+  Today             → today 23:59
+  Next Monday       → nearest upcoming Monday
+  This Weekend      → nearest Saturday 10:00
+  This Evening      → today 20:00
+  July 15           → July 15 of current/next year
+  15th July         → same
+  in 3 days         → 3 days from today
+  by end of week    → nearest Sunday 23:59
+  Start/end ranges  → use exact dates for separate tasks
+
+When multiple dates appear, match each date to its correct event — do not
+merge all dates into one task, and do not create a date-only task.
+
+════════════════════════════════════════════════════════════════
+MULTI-LINE OCR CONTEXT
+════════════════════════════════════════════════════════════════
+OCR often splits one sentence across lines, and pipe " | " separators in the
+input are added by the pre-processor to attach date/time/room fragments to
+their event line. Treat everything between " | " separators as ONE event.
+
+Example input line (after pre-processing):
+  "MA51002 Measure Theory and Integration | 2026-06-30 | 03:00 PM-05:00 PM | Room LH-1"
+→ ONE task:
+  title: "Measure Theory and Integration Exam"
+  dueDate: 2026-06-30T09:30:00.000Z  (03:00 PM IST)
+  description: "Subject: MA51002 | Room: LH-1 | Time: 03:00–05:00 PM"
+
+Example OCR fragments:
+  "Meeting with" / "Rahul tomorrow" / "at 5 PM"
+→ ONE task:
+  title: "Meeting with Rahul"
+  dueDate: tomorrow at 17:00
+
+════════════════════════════════════════════════════════════════
+TABLES AND STRUCTURED DOCUMENTS
+════════════════════════════════════════════════════════════════
+For exam timetables, schedules, agendas, invoices:
+  • Process EVERY data row — do not skip any
+  • Do not merge multiple rows into one task
+  • Use the subject/event name column as the title
+  • Put subject code, room, invigilator in description
+  • If the document uses a pattern like "Subject Code | Subject Name | Date | Time | Room",
+    infer that it is an exam row and set title = "Subject Name Exam"
+
+════════════════════════════════════════════════════════════════
+CONFIDENCE SCORING
+════════════════════════════════════════════════════════════════
+Start at 0.55, then apply these boosts (they stack):
+  +0.20  deadline / due / submit / submission / final
+  +0.18  exam / test / quiz / viva / assessment
+  +0.15  meeting / appointment / interview / presentation / payment / invoice / bill
+  +0.12  starts / begins / opens / ends / closes / hackathon / registration
+  +0.08  dueDate is set
+  Cap at 0.99.
+Lower toward 0.45 only when the title was inferred from heavily fragmented text
+with no clear surrounding context.
+
+════════════════════════════════════════════════════════════════
+PRIORITY
+════════════════════════════════════════════════════════════════
+HIGH:   urgent, ASAP, critical, must, exam, final, deadline, overdue, immediately
+MEDIUM: important, submit, meeting, appointment, interview, should, need to, soon
+LOW:    when possible, eventually, optional, FYI, note
+
+════════════════════════════════════════════════════════════════
+RECURRENCE
+════════════════════════════════════════════════════════════════
+Convert patterns like "every Monday", "weekly", "daily" to iCal RRULE:
+  "every Monday"   → FREQ=WEEKLY;BYDAY=MO
+  "every weekday"  → FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR
+  "monthly"        → FREQ=MONTHLY
+  "every 1st"      → FREQ=MONTHLY;BYMONTHDAY=1
+
+════════════════════════════════════════════════════════════════
+REMINDERS
+════════════════════════════════════════════════════════════════
+HIGH + dueDate   → ["-P1D", "-PT1H"]
+MEDIUM + dueDate → ["-PT1H"]
+LOW + dueDate    → ["-PT30M"]
+No dueDate       → []
+
+════════════════════════════════════════════════════════════════
+DO NOT
+════════════════════════════════════════════════════════════════
+  • Do not invent tasks not found in the text
+  • Do not treat each OCR line as an independent task
+  • Do not return any text commentary — only the JSON object
+  • Do not create a task whose title is only a date, time, room, or code
+  • If no actionable tasks exist, return { "tasks": [] }`;
 
 // ─── Request / response types ────────────────────────────────────────────────
 
@@ -243,13 +497,47 @@ export class OpenAIExtractionService implements AIExtractionService {
     }
 
     const now = new Date();
+    const maxInputChars = parseInt(
+      process.env.OPENAI_MAX_INPUT_CHARS ?? "100000",
+      10
+    );
+    const llmInput =
+      text.length > maxInputChars ? text.slice(0, maxInputChars) : text;
+
+    if (text.length > maxInputChars) {
+      console.warn(
+        `[OpenAIExtractionService] input truncated: ${text.length} → ${maxInputChars} chars`
+      );
+    }
+
+    console.info(`[OpenAIExtractionService] LLM input length=${llmInput.length}`);
+
+    // Deterministic date scan — gives the LLM a complete date inventory
+    // so it never misses a date that appears anywhere in the document.
+    const detectedDates = extractAllDates(llmInput);
+    const dateInventoryLine = detectedDates.length > 0
+      ? `Detected dates in document (ISO): ${detectedDates.join(", ")}`
+      : "No dates detected by deterministic scanner.";
+
     const userPrompt = [
       `Current date and time: ${now.toISOString()} (${now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })})`,
       `Source type: ${mimeType}`,
+      dateInventoryLine,
       "",
-      "Text to analyse:",
+      "Instructions: Read the FULL document below before extracting.",
+      "TITLE PRIORITY: Use the first meaningful non-empty line as the title.",
+      "SKIP metadata-only lines: Deadline, Due, Date, Time, Venue, Room, Location,",
+      "Submission Opens, Submission Ends, Starts, Ends, Commences, Concludes.",
+      "If a heading word (Assignment, Project, Exam, Meeting, Hackathon, etc.) appears",
+      "on its own line, combine it with the NEXT descriptive line as the title.",
+      "Examples: 'Assignment' + 'Database Systems' → 'Database Systems Assignment'",
+      "          'Project' + 'Smart Parking System' → 'Smart Parking System Project'",
+      "          'Meeting' + 'Marketing Team' → 'Marketing Team Meeting'",
+      "Group related lines. Associate dates/times with the correct event.",
+      "",
+      "Document text:",
       "────────────────────────────────────────",
-      text.slice(0, 14000), // ~3500 tokens — leave room for output
+      llmInput,
       "────────────────────────────────────────",
     ].join("\n");
 

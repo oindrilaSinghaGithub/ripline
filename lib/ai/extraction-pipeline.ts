@@ -23,6 +23,8 @@
 import { getOCRService } from "./ocr";
 import { getExtractionService } from "./index";
 import { MockAIExtractionService } from "./mock-extraction-service";
+import { prepareTextForExtraction } from "./preprocess-extraction-text";
+import { refineSuggestions } from "./suggestion-quality";
 import type { ExtractionResult, SourceMimeType } from "./types";
 import type { OCRMimeType } from "./ocr/types";
 
@@ -87,6 +89,10 @@ export async function runExtractionPipeline(
     };
   }
 
+  // Merge fragmented OCR lines before LLM / heuristic extraction
+  extractedText = prepareTextForExtraction(extractedText);
+  console.info(`[pipeline] Prepared text for extraction — ${extractedText.length} chars`);
+
   // ─── Step 2: LLM extraction ───────────────────────────────────────────────
   const llmService = getExtractionService();
   const isLLMReal = !(llmService instanceof MockAIExtractionService);
@@ -118,6 +124,15 @@ export async function runExtractionPipeline(
   console.info("[pipeline] Using heuristic (mock) extractor");
   const fallback = new MockAIExtractionService();
   const heuristicResult = await fallback.extractFromText(extractedText, sourceMime);
+
+  if (heuristicResult.success) {
+    return {
+      ...heuristicResult,
+      suggestions: refineSuggestions(heuristicResult.suggestions),
+      provider: "heuristic",
+      ocrConfidence,
+    };
+  }
 
   return {
     ...heuristicResult,

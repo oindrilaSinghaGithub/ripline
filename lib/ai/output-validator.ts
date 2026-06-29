@@ -40,6 +40,7 @@ import {
   TaskSuggestionSchema,
 } from "./suggestion-schema";
 import type { TaskSuggestion } from "./types";
+import { refineSuggestions } from "./suggestion-quality";
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 
@@ -257,23 +258,24 @@ export function validateLLMOutput(
     }
   }
 
-  // ── 6. Summary logging ────────────────────────────────────────────────────
-  const needsReviewCount = suggestions.filter((s) => s.needsReview).length;
+  // ── 6. Quality refinement (merge fragment titles, flag uncertain items) ───
+  const refined = refineSuggestions(suggestions);
+  const needsReviewCount = refined.filter((s) => s.needsReview).length;
 
   console.info(
-    `${LOG_PREFIX} ${source}: ${suggestions.length} kept` +
+    `${LOG_PREFIX} ${source}: ${refined.length} kept after refinement` +
       (skipped > 0 ? `, ${skipped} dropped (no title)` : "") +
       (needsReviewCount > 0 ? `, ${needsReviewCount} flagged needsReview` : ""),
   );
 
-  if (suggestions.length === 0) {
+  if (refined.length === 0) {
     return {
       success: false,
       error: `All ${rawArray.length} item(s) from ${source} were dropped (missing title). Check server logs.`,
     };
   }
 
-  return { success: true, suggestions, skipped };
+  return { success: true, suggestions: refined, skipped };
 }
 
 // Re-export types that consumers may need
