@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { DashboardSidebar } from "@/components/dashboard/sidebar";
 import { DashboardHeader } from "@/components/dashboard/header";
+import { ProfileBootstrap } from "@/components/profile-bootstrap";
 
 export default async function DashboardLayout({
   children,
@@ -16,6 +17,7 @@ export default async function DashboardLayout({
 
   return (
     <div className="flex h-screen overflow-hidden">
+      <ProfileBootstrap user={session.user} />
       <DashboardSidebar user={session.user} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <DashboardHeader user={session.user} />

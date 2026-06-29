@@ -11,23 +11,20 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useProfile } from "@/components/profile-provider";
 import type { SessionUser } from "@/types";
 
 interface DashboardHeaderProps {
   user: SessionUser;
 }
 
-function getInitials(name?: string | null): string {
-  if (!name) return "?";
-  return name
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-}
-
 export function DashboardHeader({ user }: DashboardHeaderProps) {
+  const { profile, getInitials } = useProfile();
+
+  const displayName = profile.name || user?.name || "User";
+  const displayEmail = profile.email || user?.email || "—";
+  const avatarSrc = profile.avatarUrl || user?.image || undefined;
+
   return (
     <header className="flex h-16 shrink-0 items-center justify-end border-b bg-card px-6">
       <DropdownMenu>
@@ -36,9 +33,9 @@ export function DashboardHeader({ user }: DashboardHeaderProps) {
           aria-label="Open user menu"
         >
           <Avatar className="h-8 w-8">
-            <AvatarImage src={user?.image ?? undefined} alt={user?.name ?? "User"} />
+            <AvatarImage src={avatarSrc} alt={displayName} />
             <AvatarFallback className="text-xs">
-              {getInitials(user?.name)}
+              {getInitials(displayName)}
             </AvatarFallback>
           </Avatar>
         </DropdownMenuTrigger>
@@ -46,11 +43,9 @@ export function DashboardHeader({ user }: DashboardHeaderProps) {
         <DropdownMenuContent align="end" className="w-56">
           <DropdownMenuLabel className="font-normal">
             <div className="flex flex-col space-y-1">
-              <p className="text-sm font-medium leading-none">
-                {user?.name ?? "—"}
-              </p>
+              <p className="text-sm font-medium leading-none">{displayName}</p>
               <p className="text-xs leading-none text-muted-foreground">
-                {user?.email ?? "—"}
+                {displayEmail}
               </p>
             </div>
           </DropdownMenuLabel>
