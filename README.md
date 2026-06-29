@@ -8,7 +8,7 @@ Built on **Next.js 16 App Router**, **Prisma**, **Auth.js v5**, and **Aurora Pos
 
 ## What Actually Works
 
-| Feature | Status |
+| Feature 
 |---|---|
 | Google + GitHub OAuth 
 | Task CRUD (create / edit / delete / complete) 
